@@ -34,8 +34,10 @@ int main()
   
   double target_x = 0.0;
   double target_y = 0.0;
+  double target_v = 0.0;
+  double target_yaw = 0.0;
 
-  h.onMessage([&ukf,&target_x,&target_y](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length, uWS::OpCode opCode) {
+    h.onMessage([&ukf,&target_x,&target_y, &target_v, &target_yaw](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length, uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
     // The 2 signifies a websocket event
@@ -45,7 +47,6 @@ int main()
 
       auto s = hasData(std::string(data));
       if (s != "") {
-      	
       	
         auto j = json::parse(s);
         std::string event = j[0].get<std::string>();
@@ -104,20 +105,54 @@ int main()
           meas_package_R.timestamp_ = timestamp_R;
           
     	  ukf.ProcessMeasurement(meas_package_R);
-
-	  target_x = ukf.x_[0];
-	  target_y = ukf.x_[1];
-
-    	  double heading_to_target = atan2(target_y - hunter_y, target_x - hunter_x);
-    	  while (heading_to_target > M_PI) heading_to_target-=2.*M_PI; 
-    	  while (heading_to_target <-M_PI) heading_to_target+=2.*M_PI;
-    	  //turn towards the target
-    	  double heading_difference = heading_to_target - hunter_heading;
-    	  while (heading_difference > M_PI) heading_difference-=2.*M_PI; 
-    	  while (heading_difference <-M_PI) heading_difference+=2.*M_PI;
-
-    	  double distance_difference = sqrt((target_y - hunter_y)*(target_y - hunter_y) + (target_x - hunter_x)*(target_x - hunter_x));
-
+            
+            target_x = ukf.x_[0];
+            target_y = ukf.x_[1];
+            target_v = ukf.x_[2];
+            target_yaw = ukf.x_[3];
+            double heading_to_target=0.0;
+            double distance_difference=0.0;
+            double heading_difference=0.0;
+            
+            heading_to_target = atan2(target_y - hunter_y, target_x - hunter_x);
+            ukf.NormalizeAngle(heading_to_target);
+            //turn towards the target
+            heading_difference = heading_to_target - hunter_heading;
+            ukf.NormalizeAngle(heading_difference);
+            heading_difference = heading_difference * 0.1;
+            distance_difference = sqrt((target_y - hunter_y)*(target_y - hunter_y) + (target_x - hunter_x)*(target_x - hunter_x));
+            
+            if(ukf.P_.maxCoeff() < 0.03){
+                VectorXd current_x = ukf.x_;
+                MatrixXd current_P = ukf.P_;
+                for(double delta_t = 0.1; delta_t < 10; delta_t+=0.05){
+                    ukf.Prediction(delta_t);
+                    
+                    const double pred_target_x = ukf.x_[0];
+                    const double pred_target_y = ukf.x_[1];
+                    
+                    const double distance = sqrt((pred_target_y - hunter_y)*(pred_target_y - hunter_y) + (pred_target_x - hunter_x)*(pred_target_x - hunter_x));
+                    const double intercept_distance = distance - delta_t * target_v;
+                    if(intercept_distance < 0){
+                        //gotcha
+                        cout << "On my way to intercept in " << delta_t << " seconds! Crossing at " << intercept_distance << " units." << endl;
+                        
+                        heading_to_target = atan2(pred_target_y - hunter_y, pred_target_x - hunter_x);
+                        ukf.NormalizeAngle(heading_to_target);
+                        
+                        //turn towards the target
+                        heading_difference = heading_to_target - hunter_heading;
+                        ukf.NormalizeAngle(heading_difference);
+                        
+                        heading_difference = heading_difference * 0.1;
+                        distance_difference = distance*0.3;
+                        break;
+                    }
+                }
+                ukf.x_ = current_x;
+                ukf.P_ = current_P;
+            }
+            
           json msgJson;
           msgJson["turn"] = heading_difference;
           msgJson["dist"] = distance_difference; 
